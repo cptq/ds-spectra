@@ -123,7 +123,7 @@ def plot4(save_file="temp"):
     plt.savefig(save_file, format="jpg", dpi=600)
 
 if __name__ == "__main__":
-    plot1(5)
+    #plot1(5)
     #plot2()
     #plot3(5)
     #plot4()
