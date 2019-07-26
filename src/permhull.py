@@ -7,6 +7,8 @@ from math import factorial
 import numpy as np
 import multiprocessing as mp
 
+from inequivpairs import read_inequiv_pairs
+
 def poly_boundary(k):
     """ represents boundary of kth roots of unity polygon
         with x_ranges between vertices of k-gon
@@ -15,9 +17,9 @@ def poly_boundary(k):
     x_ranges = []
     lines = []
     for pt in range(0, k//2):
-        x1, x2 = np.cos(pt*2*np.pi / k), np.cos((pt+1)*2*np.pi/k)
-        y1, y2 = np.sin(pt*2*np.pi / k), np.sin((pt+1)*2*np.pi/k)
-        m = (y2 - y1)/(x2-x1)
+        x1, x2 = np.cos(pt*2*np.pi/k), np.cos((pt+1)*2*np.pi/k)
+        y1, y2 = np.sin(pt*2*np.pi/k), np.sin((pt+1)*2*np.pi/k)
+        m = (y2-y1)/(x2-x1)
         b = y1-m*x1
         x_ranges.append((x2,x1))
         lines.append((m,b))
@@ -58,7 +60,6 @@ def get_out_region(vals, n):
     x_ranges, lines = pm_boundary(n)
     return list(filter(lambda v: not in_region(v, x_ranges, lines),
                        vals))
-
 
 def symmetric_group(n):
     """ symmetric group of size n
@@ -103,13 +104,13 @@ def cycle_types(n):
 
 def accel_asc(n):
     """ compute partitions of size n
-        algorithm by jerome kelleher
+        algorithm and implementation by jerome kelleher
     """
     a = [0 for i in range(n + 1)]
     k = 1
     y = n - 1
     while k != 0:
-        x = a[k - 1] + 1
+        x = a[k-1] + 1
         k -= 1
         while 2 * x <= y:
             a[k] = x
@@ -122,10 +123,9 @@ def accel_asc(n):
             yield a[:k + 2]
             x += 1
             y -= 1
-
         a[k] = x + y
         y = x + y - 1
-        yield a[:k + 1]
+        yield a[:k+1]
 
 def conv_comb_pairs(As, incr=0.01):
     """ eigenvalues achieved by convex
@@ -269,92 +269,6 @@ def search_exception_mids(n, num_incr=1000):
                     return
     print(f"No exception: n = {n}")
 
-def make_inequiv_pairs(n):
-    """ Convert from gap permutation pairs output to txt format
-        gap format is assumed to be stored in Pairs-n-1-1.txt
-    """
-    path = "data10/"
-    fname = f"Pairs-{n}-1-1.txt"
-    with open(f"{path}{fname}", "r") as f:
-        lst = f.readlines()
-    inequiv_parser_pairs(lst, f"{path}New_{fname}", n)
-
-def inequiv_parser_pairs(lst, out_file, n, save_chunk=100000):
-    """ parse gap txt output in lst
-        make new format
-    """
-    pairs_lst = []
-    count = 0
-    with open(out_file, "w") as f:
-        i = 0
-        while i < len(lst):
-            r = lst[i]
-            row_count = 0
-            # cycles of first perm in pair
-            middle = r[1:-1]
-            left_paren = middle.find("[")
-            right_paren = middle.find("],")
-            first_perm = middle[left_paren:right_paren+1]
-            if first_perm.find(".") < 0:
-                first_perm = first_perm.split()
-                first_lst = [int(i.strip(",")) for i in first_perm if i.strip(",").isdigit()]
-            else:
-                first_lst = [i+1 for i in range(n)] # is identity
-
-            # cycles of second perm in pair
-            sec_half = middle[right_paren+1:]
-            sec_left_paren = sec_half.find("[")
-            if sec_left_paren < 0: # on a half line
-                i += 1
-                r = lst[i]
-                middle = r[1:-1]
-                sec_left_paren = middle.find("[")
-                sec_half = middle
-            sec_right_paren = sec_half.rfind("]")
-            sec_perm = sec_half[sec_left_paren:sec_right_paren+1]
-            if sec_perm.find(".") < 0:
-                sec_perm = sec_perm.split()
-                sec_lst = [int(i.strip(",")) for i in sec_perm if i.strip(",").isdigit()]
-            else:
-                sec_lst = [i+1 for i in range(n)] # is identity
-
-            pairs_lst.append((first_lst, sec_lst))
-            count += 1
-            if count >= save_chunk:
-                # save memory by writing in chunks
-                f.writelines((str(pair)[1:-1]+"\n" for pair in pairs_lst))
-                del pairs_lst
-                pairs_lst = []
-                count = 0
-            i+=1
-
-        f.writelines((str(pair)[1:-1]+"\n" for pair in pairs_lst))
-    del pairs_lst
-    print("done saving")
-
-def read_inequiv_pairs(n):
-    """ read New_Pairs-n-1-1.txt and return pairs of permutations
-    """
-    with open(f"data10/New_Pairs-{n}-1-1.txt", "r") as f:
-        lst = f.readlines()
-    perms = []
-    for r in lst:
-        middle = r[0:-1]
-        left_paren = middle.find("[")
-        right_paren = middle.find("],")
-        first_perm = middle[left_paren+1:right_paren]
-        first_perm = first_perm.replace(",", " ").split()
-        first_lst = [int(i) for i in first_perm]
-
-        sec_half = middle[right_paren+1:]
-        sec_left_paren = sec_half.find("[")
-        sec_right_paren = sec_half.rfind("]")
-        sec_perm = sec_half[sec_left_paren+1:sec_right_paren]
-        sec_perm = sec_perm.replace(",", " ").split()
-        sec_lst = [int(i) for i in sec_perm]
-        perms.append((first_lst, sec_lst))
-    return perms
-
 def compute_inequiv_pairs_DS_n(n, num_incr=100, save_file="new_pairs_DS",
                     save_chunk=10000):
     """ Computes eigenvalues of inequivalent pairs
@@ -384,14 +298,13 @@ def compute_inequiv_pairs_DS_n(n, num_incr=100, save_file="new_pairs_DS",
                 eigvals=[]
         f.writelines(str(val)+"\n" for val in eigvals)
 
-def inequiv_search_exception(n, num_incr=1000):
+def inequiv_search_exception(n, num_incr=100):
     """ search for exception to perfect mirsky for
         given n, checking pairs
         uses inequivalent pairs 
     """
     eigvals = []
     in_rad = np.cos(np.pi/n)
-    count=0
     x_ranges, lines = pm_boundary(n)
     pairs = map(lambda t: (perm_to_mat(t[0]),
                                perm_to_mat(t[1])),
@@ -410,6 +323,55 @@ def inequiv_search_exception(n, num_incr=1000):
                 print("eigenvalue:", exc_lst[0], "\n")
                 print(P, "\n")
                 print(Q, "\n")
+                return
+    print(f"No exception: n = {n}")
+
+
+def parallel_search_exception(n):
+    """ searches for exception to the perfect mirsky conjecture
+        of size n, using multiprocessing for parallelization
+        uses one less than total cpus available
+        n is size of problem
+        num_incr is controlled by worker_pairs !!
+    """
+    eigvals = []
+    in_rad = np.cos(np.pi/n)
+    pool = mp.Pool(max(mp.cpu_count()-1, 1)) 
+    x_ranges, lines = pm_boundary(n)
+    for vals in pool.imap(worker_pairs, itertools.product(cycle_types(n), symmetric_group(n))):
+        eigvals.extend(filter(lambda val: val.imag > 0 and val.real != 0 and
+            abs(val)>in_rad, vals))
+
+        if len(eigvals) > 0:
+                exc_lst = list(filter(lambda val: not in_region(val, x_ranges,lines), eigvals))
+                if len(exc_lst) > 0:
+                    print(f"EXCEPTION FOUND FOR n = {n}", "\n")
+                    print("eigenvalue:", exc_lst[0], "\n")
+                    return
+    print(f"No exception: n = {n}")
+
+def parallel_inequiv_search_exception(n, num_incr=30):
+    """ search for exception to perfect mirsky for
+        given n, checking pairs
+        uses inequivalent pairs 
+    """
+    eigvals = []
+    in_rad = np.cos(np.pi/n)
+    pool = mp.Pool(max(mp.cpu_count()-1, 1)) 
+    x_ranges, lines = pm_boundary(n)
+    pairs = map(lambda t: (perm_to_mat(t[0]),
+                               perm_to_mat(t[1])),
+                               read_inequiv_pairs(n))
+    for vals in pool.starmap(worker_pairs, ((pair[0], pair[1], num_incr) for pair in pairs) ):
+        eigvals = list(filter(
+            lambda val: val.imag > 0 and val.real != 0 and
+            abs(val)>in_rad, vals))
+        if len(eigvals) > 0:
+            exc_lst = list(filter(lambda val: not in_region(val, x_ranges,lines),
+                      eigvals))
+            if len(exc_lst) > 0:
+                print(f"EXCEPTION FOUND FOR n = {n}", "\n")
+                print("eigenvalue:", exc_lst[0], "\n")
                 return
     print(f"No exception: n = {n}")
 
@@ -469,23 +431,22 @@ def search_trips_exception(n, num_incr=100):
                             return
     print(f"No exception: n = {n}")
 
-def worker_pairs(As, num_incr=10):
+def worker_pairs(A1, A2, num_incr):
     """ returns eigenvalues of convex combinations of pairs for As"""
-    return conv_comb_pairs(As, 1/num_incr)
+    return conv_comb_pairs([A1, A2], 1/num_incr)
 
-def parallel_search_exception(n):
+def parallel_search_exception(n, num_incr=10):
     """ searches for exception to the perfect mirsky conjecture
         of size n, using multiprocessing for parallelization
         uses one less than total cpus available
         n is size of problem
-        num_incr is controlled by worker_pairs !!
     """
     eigvals = []
     in_rad = np.cos(np.pi/n)
     pool = mp.Pool(max(mp.cpu_count()-1, 1)) 
     x_ranges, lines = pm_boundary(n)
-    for vals in pool.imap(worker_pairs, itertools.product(cycle_types(n), symmetric_group(n))):
-            #((C,P) for C in cycle_types(n) for P in symmetric_group(n))):
+    pairs = itertools.product(cycle_types(n), symmetric_group(n))
+    for vals in pool.starmap(worker_pairs, ( (pair[0], pair[1], num_incr) for pair in pairs )):
         eigvals.extend(filter(lambda val: val.imag > 0 and val.real != 0 and
             abs(val)>in_rad, vals))
 
