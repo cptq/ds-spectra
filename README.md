@@ -6,7 +6,7 @@ Code by Derek Lim accompanying paper "The Doubly Stochastic Single Eigenvalue Pr
 `make test` runs the test suite
 
 ## Scripts
-The functions to compute $DS_n$ or search for exceptions to the Perfect-Mirsky conjecture are included in `permhull.py`.
+The functions to compute DSn or search for exceptions to the Perfect-Mirsky conjecture are included in `permhull.py`.
 
 ## Plots 
 Some plots are included in Plots/
