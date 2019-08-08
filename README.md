@@ -18,3 +18,5 @@ Some plots are included in Plots/
 `genplots.py` contains code to generate some of the plots from the paper.
 
 To generate plots, import genplots, then call the corresponding plot function.
+
+`data` contains some required data for generating plots.
