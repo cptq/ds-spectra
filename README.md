@@ -2,6 +2,8 @@ Code by Derek Lim accompanying paper "The Doubly Stochastic Single Eigenvalue Pr
 
 Contact Derek Lim at dl772@cornell.edu or at cptq on Github with any inquiries.
 
+![](/plots/Figure_5.jpg)
+
 ## Make
 `make init` uses pip to install requirements as found in `requirements.txt`
 
