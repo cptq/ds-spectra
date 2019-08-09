@@ -1,4 +1,4 @@
-Code by Derek Lim accompanying paper "The Doubly Stochastic Single Eigenvalue Problem: A Computational Approach" by Derek Lim, Charles R. Johnson.
+Codes accompanying paper "The Doubly Stochastic Single Eigenvalue Problem: A Computational Approach" by Amit Harlev, Charles R. Johnson, and Derek Lim
 
 Contact Derek Lim at dl772@cornell.edu or at cptq on Github with any inquiries.
 
