@@ -1,6 +1,20 @@
-n := 6;
-chunks := 1;
-runChunk := 1;
+#
+# Usage:
+#   gap -q src/computeInequivPairs.g
+#   gap -q -c 'n:=13; chunks:=6; runChunk:=2; Read("src/computeInequivPairs.g");'
+# Args:
+#   n: group size; chunks: number of chunks to split work; runChunk: 1-based chunk index.
+#
+
+if not IsBound(n) then
+    n := 10;
+fi;
+if not IsBound(chunks) then
+    chunks := 1;
+fi;
+if not IsBound(runChunk) then
+    runChunk := 1;
+fi;
 
 start_time := NanosecondsSinceEpoch();
 
@@ -34,7 +48,7 @@ for pair in pairs do
     od;
 od;
 
-path := Directory(".");
+path := Directory("pairs_data");
 # Output file name would "Pairs-11-6-2" means DS11 Pairings, with this being the second chunk of 6
 filename := Concatenation("Pairs-",String(n),"-",String(chunks),"-",String(runChunk),".txt");
 file := Filename(path, filename);
@@ -45,6 +59,7 @@ for pair in uniquePairs do
 od;
 
 CloseStream(output);
+Display(Concatenation(["Saved to: ", file]));
 s := Concatenation(["n = ", String(n), ". Pairs = ", String(Length(uniquePairs))]);
 Display(s);
 end_time := Float((NanosecondsSinceEpoch() - start_time)/1*10^(-9));
