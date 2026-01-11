@@ -155,7 +155,7 @@ def _eigvals_batch(P_batch, diff_batch, t_grid):
     return vals.reshape(P_batch.shape[0], t_grid.shape[0], n)
 
 
-def gpu_search_exception(n, num_incr=10, max_pairs=None, pair_batch=64):
+def gpu_search_exception(n, num_incr=10, max_pairs=None, pair_batch=64, device=None):
     """Search for exceptions using GPU eigenvalues over pair convex combos.
 
     Args:
@@ -163,15 +163,18 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, pair_batch=64):
         num_incr: number of t samples along each pair segment.
         max_pairs: optional cap for the number of pairs to check.
         pair_batch: number of permutation pairs to batch per eigensolve.
+        device: torch device string or object (defaults to CUDA if available).
 
     Returns:
         dict with search stats and, if found, eigenvalue (real/imag tuple) and pair data.
     """
     pair_batch = max(int(pair_batch), 1)
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device)
     start = time.perf_counter()
     in_rad = np.cos(np.pi / n)
     x_lo, x_hi, m, b = _pm_boundary_arrays(n)
-    device = torch.device("cuda")
     dtype = torch.float64
     t_grid = torch.linspace(0.0, 1.0, steps=num_incr, device=device, dtype=dtype)
     in_rad_t = torch.tensor(in_rad, device=device, dtype=dtype)
