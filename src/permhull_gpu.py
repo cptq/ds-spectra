@@ -148,10 +148,25 @@ def _in_region_mask_torch(vals, x_lo, x_hi, m, b, eps=1e-14):
     return (in_x & below).any(dim=1)
 
 
-def _eigvals_batch(P_batch, diff_batch, t_grid):
+def _eigvals_batch(P_batch, diff_batch, t_grid, fallback_counts=None):
     mats = P_batch[:, None, :, :] + t_grid[None, :, None, None] * diff_batch[:, None, :, :]
     n = P_batch.shape[-1]
-    vals = torch.linalg.eigvals(mats.reshape(-1, n, n))
+    mats = mats.reshape(-1, n, n)
+    try:
+        vals = torch.linalg.eigvals(mats)
+    except RuntimeError:
+        # Some batches can be ill-conditioned or nearly defective; GPU eigvals may fail.
+        # Fall back to CPU and, if necessary, NumPy to keep the search running.
+        if fallback_counts is not None:
+            fallback_counts["gpu_to_cpu"] += 1
+        try:
+            vals = torch.linalg.eigvals(mats.cpu()).to(mats.device)
+        except RuntimeError:
+            if fallback_counts is not None:
+                fallback_counts["cpu_to_numpy"] += 1
+            mats_np = mats.cpu().numpy()
+            vals_np = np.stack([np.linalg.eigvals(m) for m in mats_np], axis=0)
+            vals = torch.from_numpy(vals_np).to(mats.device)
     return vals.reshape(P_batch.shape[0], t_grid.shape[0], n)
 
 
@@ -189,6 +204,7 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, batch_size=64, device=N
     cycle_perms = _cycle_type_perms(n)
 
     checked = 0
+    fallback_counts = {"gpu_to_cpu": 0, "cpu_to_numpy": 0}
     with torch.no_grad():
         for C_perm in cycle_perms:
             C_gpu = eye[torch.tensor(C_perm, device=device)]
@@ -220,7 +236,7 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, batch_size=64, device=N
                 batch_end = batch_start + current_batch
                 P_batch = eye[perms_gpu[batch_start:batch_end]]
                 diff = C_gpu.unsqueeze(0) - P_batch
-                vals = _eigvals_batch(P_batch, diff, t_grid).reshape(-1)
+                vals = _eigvals_batch(P_batch, diff, t_grid, fallback_counts).reshape(-1)
                 mask = (vals.imag > 0) & (vals.real != 0) & (vals.abs() > in_rad_t)
                 if torch.any(mask):
                     cand_idx = torch.nonzero(mask, as_tuple=False).flatten()
@@ -244,6 +260,7 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, batch_size=64, device=N
                             "pairs_checked": int(checked),
                             "pairs_checked_str": f"{checked:,}",
                             "elapsed_s": float(elapsed),
+                            "fallback_counts": fallback_counts,
                             "found": True,
                         }
                 checked += current_batch
@@ -253,5 +270,6 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, batch_size=64, device=N
         "pairs_checked": int(checked),
         "pairs_checked_str": f"{checked:,}",
         "elapsed_s": float(elapsed),
+        "fallback_counts": fallback_counts,
         "found": False,
     }
