@@ -68,6 +68,12 @@ def _perm_to_mat(perm):
     return np.eye(n, dtype=float)[perm - 1]
 
 
+def _perm_to_mat_zero_based(perm, n):
+    """Convert a 0-based permutation into its permutation matrix."""
+    perm = np.asarray(perm, dtype=int)
+    return np.eye(n, dtype=float)[perm]
+
+
 def symmetric_group(n):
     """Yield permutation matrices for S_n in lexicographic order."""
     for perm in itertools.permutations(range(1, n + 1)):
@@ -115,64 +121,128 @@ def cycle_types(n):
         yield _perm_to_mat(perm)
 
 
-def _eigvals_batch(P, diff, t_grid):
-    mats = P.unsqueeze(0) + t_grid[:, None, None] * diff
-    return torch.linalg.eigvals(mats).reshape(-1)
+def _cycle_type_perms(n):
+    """Return 0-based permutation arrays for each cycle type."""
+    partitions = accel_asc(n)
+    perms = []
+    for parts in partitions:
+        cyc_type = []
+        parts = reversed(parts)
+        i = 0
+        for cyc_len in parts:
+            cyc = [i + k + 1 for k in range(1, cyc_len)] + [i + 1]
+            cyc_type.extend(cyc)
+            i += cyc_len
+        perms.append(np.asarray(cyc_type, dtype=np.int64) - 1)
+    return perms
 
 
-def gpu_search_exception(n, num_incr=10, max_pairs=None):
+def _in_region_mask_torch(vals, x_lo, x_hi, m, b, eps=1e-14):
+    """Torch region membership for complex vals (True if inside)."""
+    if vals.numel() == 0:
+        return torch.zeros(0, dtype=torch.bool, device=vals.device)
+    x = vals.real[:, None]
+    y = vals.imag.abs()[:, None]
+    in_x = (x >= (x_lo - eps)) & (x <= (x_hi + eps))
+    below = y <= (m * x + b + eps)
+    return (in_x & below).any(dim=1)
+
+
+def _eigvals_batch(P_batch, diff_batch, t_grid):
+    mats = P_batch[:, None, :, :] + t_grid[None, :, None, None] * diff_batch[:, None, :, :]
+    n = P_batch.shape[-1]
+    vals = torch.linalg.eigvals(mats.reshape(-1, n, n))
+    return vals.reshape(P_batch.shape[0], t_grid.shape[0], n)
+
+
+def gpu_search_exception(n, num_incr=10, max_pairs=None, pair_batch=64):
     """Search for exceptions using GPU eigenvalues over pair convex combos.
 
     Args:
         n: size of the problem.
         num_incr: number of t samples along each pair segment.
         max_pairs: optional cap for the number of pairs to check.
+        pair_batch: number of permutation pairs to batch per eigensolve.
 
     Returns:
         dict with search stats and, if found, eigenvalue (real/imag tuple) and pair data.
     """
+    pair_batch = max(int(pair_batch), 1)
     start = time.perf_counter()
     in_rad = np.cos(np.pi / n)
     x_lo, x_hi, m, b = _pm_boundary_arrays(n)
     device = torch.device("cuda")
-    t_grid = torch.linspace(0.0, 1.0, steps=num_incr, device=device, dtype=torch.float64)
-    in_rad_t = torch.tensor(in_rad, device=device, dtype=torch.float64)
+    dtype = torch.float64
+    t_grid = torch.linspace(0.0, 1.0, steps=num_incr, device=device, dtype=dtype)
+    in_rad_t = torch.tensor(in_rad, device=device, dtype=dtype)
+    x_lo_t = torch.tensor(x_lo, device=device, dtype=dtype)
+    x_hi_t = torch.tensor(x_hi, device=device, dtype=dtype)
+    m_t = torch.tensor(m, device=device, dtype=dtype)
+    b_t = torch.tensor(b, device=device, dtype=dtype)
+
+    perms_cpu = np.array(list(itertools.permutations(range(n))), dtype=np.int64)
+    perms_gpu = torch.from_numpy(perms_cpu).to(device)
+    eye = torch.eye(n, device=device, dtype=dtype)
+    cycle_perms = _cycle_type_perms(n)
 
     checked = 0
-    for C in cycle_types(n):
-        C_gpu = torch.tensor(C, device=device, dtype=torch.float64)
-        for P in symmetric_group(n):
-            if max_pairs is not None and checked >= max_pairs:
-                elapsed = time.perf_counter() - start
-                return {
-                    "n": int(n),
-                    "pairs_checked": int(checked),
-                    "pairs_checked_str": f"{checked:,}",
-                    "elapsed_s": float(elapsed),
-                    "found": False,
-                }
-            checked += 1
-            P_gpu = torch.tensor(P, device=device, dtype=torch.float64)
-            diff = C_gpu - P_gpu
-            vals = _eigvals_batch(P_gpu, diff, t_grid)
-            mask = (vals.imag > 0) & (vals.real != 0) & (vals.abs() > in_rad_t)
-            if torch.any(mask):
-                cand = vals[mask].cpu().numpy()
-                inside = _in_region_mask(cand, x_lo, x_hi, m, b)
-                if not np.all(inside):
-                    idx = np.where(~inside)[0][0]
-                    val = cand[idx]
+    with torch.no_grad():
+        for C_perm in cycle_perms:
+            C_gpu = eye[torch.tensor(C_perm, device=device)]
+            total_pairs = perms_cpu.shape[0]
+            for batch_start in range(0, total_pairs, pair_batch):
+                remaining = None if max_pairs is None else max_pairs - checked
+                if remaining is not None and remaining <= 0:
                     elapsed = time.perf_counter() - start
                     return {
                         "n": int(n),
-                        "eigenvalue": (float(val.real), float(val.imag)),
-                        "C": C.tolist() if hasattr(C, "tolist") else C,
-                        "P": P.tolist() if hasattr(P, "tolist") else P,
                         "pairs_checked": int(checked),
                         "pairs_checked_str": f"{checked:,}",
                         "elapsed_s": float(elapsed),
-                        "found": True,
+                        "found": False,
                     }
+                batch_size = min(pair_batch, total_pairs - batch_start)
+                if remaining is not None:
+                    batch_size = min(batch_size, remaining)
+                if batch_size <= 0:
+                    elapsed = time.perf_counter() - start
+                    return {
+                        "n": int(n),
+                        "pairs_checked": int(checked),
+                        "pairs_checked_str": f"{checked:,}",
+                        "elapsed_s": float(elapsed),
+                        "found": False,
+                    }
+                batch_end = batch_start + batch_size
+                P_batch = eye[perms_gpu[batch_start:batch_end]]
+                diff = C_gpu.unsqueeze(0) - P_batch
+                vals = _eigvals_batch(P_batch, diff, t_grid).reshape(-1)
+                mask = (vals.imag > 0) & (vals.real != 0) & (vals.abs() > in_rad_t)
+                if torch.any(mask):
+                    cand_idx = torch.nonzero(mask, as_tuple=False).flatten()
+                    cand = vals[cand_idx]
+                    inside = _in_region_mask_torch(cand, x_lo_t, x_hi_t, m_t, b_t)
+                    if not torch.all(inside):
+                        bad_rel = torch.nonzero(~inside, as_tuple=False)[0].item()
+                        bad_idx = cand_idx[bad_rel].item()
+                        pair_idx = bad_idx // (num_incr * n)
+                        val = vals[bad_idx].cpu().numpy()
+                        checked = checked + int(pair_idx) + 1
+                        P_perm = perms_cpu[batch_start + int(pair_idx)]
+                        C_mat = _perm_to_mat_zero_based(C_perm, n)
+                        P_mat = _perm_to_mat_zero_based(P_perm, n)
+                        elapsed = time.perf_counter() - start
+                        return {
+                            "n": int(n),
+                            "eigenvalue": (float(val.real), float(val.imag)),
+                            "C": C_mat.tolist(),
+                            "P": P_mat.tolist(),
+                            "pairs_checked": int(checked),
+                            "pairs_checked_str": f"{checked:,}",
+                            "elapsed_s": float(elapsed),
+                            "found": True,
+                        }
+                checked += batch_size
     elapsed = time.perf_counter() - start
     return {
         "n": int(n),

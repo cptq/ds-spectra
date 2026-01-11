@@ -23,7 +23,7 @@ image = (
     image=image,
     timeout=60 * 60,
 )
-def gpu_search(n=4, num_incr=10, max_pairs=200):
+def gpu_search(n=4, num_incr=10, max_pairs=200, pair_batch=64):
     import sys
 
     sys.path.append("/root/src")
@@ -31,14 +31,28 @@ def gpu_search(n=4, num_incr=10, max_pairs=200):
 
     if max_pairs is not None and max_pairs <= 0:
         max_pairs = None
-    return gpu_search_exception(n, num_incr=num_incr, max_pairs=max_pairs)
+    if pair_batch is not None and pair_batch <= 0:
+        pair_batch = 64
+    return gpu_search_exception(
+        n,
+        num_incr=num_incr,
+        max_pairs=max_pairs,
+        pair_batch=pair_batch,
+    )
 
 
 @app.local_entrypoint()
-def main(n: int = 4, num_incr: int = 10, max_pairs: int = 200):
+def main(n: int = 4, num_incr: int = 10, max_pairs: int = 200, pair_batch: int = 64):
     if max_pairs is not None and max_pairs <= 0:
         max_pairs = None
-    result = gpu_search.remote(n=n, num_incr=num_incr, max_pairs=max_pairs)
+    if pair_batch is not None and pair_batch <= 0:
+        pair_batch = 64
+    result = gpu_search.remote(
+        n=n,
+        num_incr=num_incr,
+        max_pairs=max_pairs,
+        pair_batch=pair_batch,
+    )
     if result is None:
         print(result)
         return
