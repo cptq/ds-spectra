@@ -1,3 +1,14 @@
+Ran n=10 with num_incr=100 and max_pairs=200 across larger batch sizes.
+
+  Results (n=10, num_incr=100, max_pairs=200):
+
+  - batch_size=64 → elapsed_s: 4.584
+  - batch_size=128 → elapsed_s: 3.000
+  - batch_size=256 → elapsed_s: 4.116
+  - batch_size=512 → elapsed_s: 4.252
+  - batch_size=1024 → elapsed_s: 4.309
+
+
 time estimates for GAP:
 - n=13 (using true pairs 3,263,902,430): ~119.92 min (~2.00 hr)
 - n=14: ~673.83 min (~11.23 hr)
