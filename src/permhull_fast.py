@@ -1,7 +1,9 @@
 """Faster search utilities for Perfect-Mirsky exceptions (pairs only).
 
-This keeps the older permhull.py intact and focuses on a faster
-parallel_search_exception implementation.
+Notes:
+- Keeps the older `permhull.py` intact; this module is a faster drop-in.
+- `parallel_search_exception` parallelizes by cycle type, batches eigenvalues
+  across t-grid samples, and uses a vectorized Mirsky-region check.
 """
 import itertools
 import multiprocessing as mp
@@ -18,6 +20,7 @@ _IDENTITY = None
 
 
 def _poly_boundary_arrays(k):
+    """Return boundary arrays (x_lo, x_hi, m, b) for a k-gon."""
     pts = np.arange(0, k // 2, dtype=float)
     angles1 = 2 * np.pi * pts / k
     angles2 = 2 * np.pi * (pts + 1) / k
@@ -31,6 +34,7 @@ def _poly_boundary_arrays(k):
 
 
 def _pm_boundary_arrays(n):
+    """Return concatenated boundary arrays for the Perfect-Mirsky region."""
     assert n >= 3
     x_lo = []
     x_hi = []
@@ -51,6 +55,7 @@ def _pm_boundary_arrays(n):
 
 
 def _in_region_mask(vals, x_lo, x_hi, m, b, eps=1e-14):
+    """Vectorized region membership for complex vals (True if inside)."""
     if vals.size == 0:
         return np.zeros(0, dtype=bool)
     x = vals.real[:, None]
@@ -61,6 +66,7 @@ def _in_region_mask(vals, x_lo, x_hi, m, b, eps=1e-14):
 
 
 def _perm_to_mat(perm):
+    """Convert a 1-based permutation into its permutation matrix."""
     perm = np.asarray(perm, dtype=int)
     global _IDENTITY
     if _IDENTITY is None or _IDENTITY.shape[0] != len(perm):
@@ -69,11 +75,13 @@ def _perm_to_mat(perm):
 
 
 def symmetric_group(n):
+    """Yield permutation matrices for S_n in lexicographic order."""
     for perm in itertools.permutations(range(1, n + 1)):
         yield _perm_to_mat(perm)
 
 
 def accel_asc(n):
+    """Yield integer partitions of n (Kelleher's accel_asc algorithm)."""
     a = [0 for _ in range(n + 1)]
     k = 1
     y = n - 1
@@ -97,6 +105,7 @@ def accel_asc(n):
 
 
 def cycle_types(n):
+    """Yield one permutation matrix representative per cycle type in S_n."""
     partitions = accel_asc(n)
     types = []
     for parts in partitions:
@@ -113,6 +122,7 @@ def cycle_types(n):
 
 
 def _pair_exception_eigval(C, P):
+    """Return a violating eigenvalue for pair (C, P), or None if none found."""
     diff = C - P
     mats = P[None, :, :] + _T_GRID[:, None, None] * diff[None, :, :]
     try:
@@ -142,6 +152,7 @@ def _pair_exception_eigval(C, P):
 
 
 def _worker_cycle_type(C):
+    """Search all pairs with fixed cycle-type matrix C for an exception."""
     for P in symmetric_group(_IDENTITY.shape[0]):
         eigval = _pair_exception_eigval(C, P)
         if eigval is not None:
@@ -150,6 +161,7 @@ def _worker_cycle_type(C):
 
 
 def _init_worker(n, num_incr):
+    """Initializer to precompute grids and region data in each worker."""
     global _T_GRID, _IN_RAD, _X_LO, _X_HI, _M, _B, _IDENTITY
     _T_GRID = np.linspace(0.0, 1.0, num=num_incr, dtype=float)
     _IN_RAD = np.cos(np.pi / n)
@@ -158,7 +170,10 @@ def _init_worker(n, num_incr):
 
 
 def parallel_search_exception(n, num_incr=10, processes=None, chunksize=1):
-    """Search for exceptions using pairs, parallelized by cycle type."""
+    """Search for exceptions using pairs, parallelized by cycle type.
+
+    Returns (eigval, C, P) on success, otherwise None.
+    """
     if processes is None:
         processes = max(mp.cpu_count() - 1, 1)
     global _IDENTITY
