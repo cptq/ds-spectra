@@ -1,0 +1,4 @@
+time estimates for GAP:
+- n=13 (using true pairs 3,263,902,430): ~119.92 min (~2.00 hr)
+- n=14: ~673.83 min (~11.23 hr)
+- n=15: ~4,764.84 min (~79.4 hr)
