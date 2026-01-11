@@ -32,7 +32,7 @@ def test_gpu_search_n4_n5():
         4,
         num_incr=400,
         max_pairs=None,
-        pair_batch=32,
+        batch_size=32,
         device="cpu",
     )
     assert res4["found"] is False
@@ -41,7 +41,7 @@ def test_gpu_search_n4_n5():
         5,
         num_incr=400,
         max_pairs=None,
-        pair_batch=32,
+        batch_size=32,
         device="cpu",
     )
     assert res5["found"] is True

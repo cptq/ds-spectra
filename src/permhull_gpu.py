@@ -155,20 +155,20 @@ def _eigvals_batch(P_batch, diff_batch, t_grid):
     return vals.reshape(P_batch.shape[0], t_grid.shape[0], n)
 
 
-def gpu_search_exception(n, num_incr=10, max_pairs=None, pair_batch=64, device=None):
+def gpu_search_exception(n, num_incr=10, max_pairs=None, batch_size=64, device=None):
     """Search for exceptions using GPU eigenvalues over pair convex combos.
 
     Args:
         n: size of the problem.
         num_incr: number of t samples along each pair segment.
         max_pairs: optional cap for the number of pairs to check.
-        pair_batch: number of permutation pairs to batch per eigensolve.
+        batch_size: number of permutation pairs to batch per eigensolve.
         device: torch device string or object (defaults to CUDA if available).
 
     Returns:
         dict with search stats and, if found, eigenvalue (real/imag tuple) and pair data.
     """
-    pair_batch = max(int(pair_batch), 1)
+    batch_size = max(int(batch_size), 1)
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
@@ -193,7 +193,8 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, pair_batch=64, device=N
         for C_perm in cycle_perms:
             C_gpu = eye[torch.tensor(C_perm, device=device)]
             total_pairs = perms_cpu.shape[0]
-            for batch_start in range(0, total_pairs, pair_batch):
+            step = batch_size
+            for batch_start in range(0, total_pairs, step):
                 remaining = None if max_pairs is None else max_pairs - checked
                 if remaining is not None and remaining <= 0:
                     elapsed = time.perf_counter() - start
@@ -204,10 +205,10 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, pair_batch=64, device=N
                         "elapsed_s": float(elapsed),
                         "found": False,
                     }
-                batch_size = min(pair_batch, total_pairs - batch_start)
+                current_batch = min(step, total_pairs - batch_start)
                 if remaining is not None:
-                    batch_size = min(batch_size, remaining)
-                if batch_size <= 0:
+                    current_batch = min(current_batch, remaining)
+                if current_batch <= 0:
                     elapsed = time.perf_counter() - start
                     return {
                         "n": int(n),
@@ -216,7 +217,7 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, pair_batch=64, device=N
                         "elapsed_s": float(elapsed),
                         "found": False,
                     }
-                batch_end = batch_start + batch_size
+                batch_end = batch_start + current_batch
                 P_batch = eye[perms_gpu[batch_start:batch_end]]
                 diff = C_gpu.unsqueeze(0) - P_batch
                 vals = _eigvals_batch(P_batch, diff, t_grid).reshape(-1)
@@ -245,7 +246,7 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, pair_batch=64, device=N
                             "elapsed_s": float(elapsed),
                             "found": True,
                         }
-                checked += batch_size
+                checked += current_batch
     elapsed = time.perf_counter() - start
     return {
         "n": int(n),
