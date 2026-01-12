@@ -23,7 +23,14 @@ image = (
     image=image,
     timeout=60 * 60,
 )
-def gpu_search(n=4, num_incr=100, max_pairs=200, batch_size=64):
+def gpu_search(
+    n=4,
+    num_incr=100,
+    max_pairs=200,
+    batch_size=64,
+    random_seed=-1,
+    inexhaustive=False,
+):
     import sys
 
     sys.path.append("/root/src")
@@ -33,16 +40,26 @@ def gpu_search(n=4, num_incr=100, max_pairs=200, batch_size=64):
         max_pairs = None
     if batch_size is not None and batch_size <= 0:
         batch_size = 64
+    random_seed = None if random_seed is None or random_seed < 0 else random_seed
     return gpu_search_exception(
         n,
         num_incr=num_incr,
         max_pairs=max_pairs,
         batch_size=batch_size,
+        random_seed=random_seed,
+        inexhaustive=inexhaustive,
     )
 
 
 @app.local_entrypoint()
-def main(n: int = 4, num_incr: int = 100, max_pairs: int = 200, batch_size: int = 64):
+def main(
+    n: int = 4,
+    num_incr: int = 100,
+    max_pairs: int = 200,
+    batch_size: int = 64,
+    random_seed: int = -1,
+    inexhaustive: bool = False,
+):
     if max_pairs is not None and max_pairs <= 0:
         max_pairs = None
     if batch_size is not None and batch_size <= 0:
@@ -52,6 +69,8 @@ def main(n: int = 4, num_incr: int = 100, max_pairs: int = 200, batch_size: int 
         num_incr=num_incr,
         max_pairs=max_pairs,
         batch_size=batch_size,
+        random_seed=random_seed,
+        inexhaustive=inexhaustive,
     )
     if result is None:
         print(result)

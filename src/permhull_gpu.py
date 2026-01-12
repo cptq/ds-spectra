@@ -170,7 +170,16 @@ def _eigvals_batch(P_batch, diff_batch, t_grid, fallback_counts=None):
     return vals.reshape(P_batch.shape[0], t_grid.shape[0], n)
 
 
-def gpu_search_exception(n, num_incr=10, max_pairs=None, batch_size=64, device=None):
+def gpu_search_exception(
+    n,
+    num_incr=10,
+    max_pairs=None,
+    batch_size=64,
+    device=None,
+    randomize=True,
+    random_seed=None,
+    inexhaustive=False,
+):
     """Search for exceptions using GPU eigenvalues over pair convex combos.
 
     Args:
@@ -179,6 +188,9 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, batch_size=64, device=N
         max_pairs: optional cap for the number of pairs to check.
         batch_size: number of permutation pairs to batch per eigensolve.
         device: torch device string or object (defaults to CUDA if available).
+        randomize: whether to shuffle the pair traversal order.
+        random_seed: optional seed for deterministic shuffling.
+        inexhaustive: sample random permutation batches indefinitely (no full list).
 
     Returns:
         dict with search stats and, if found, eigenvalue (real/imag tuple) and pair data.
@@ -198,19 +210,36 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, batch_size=64, device=N
     m_t = torch.tensor(m, device=device, dtype=dtype)
     b_t = torch.tensor(b, device=device, dtype=dtype)
 
-    perms_cpu = np.array(list(itertools.permutations(range(n))), dtype=np.int64)
-    perms_gpu = torch.from_numpy(perms_cpu).to(device)
+    seed = None if random_seed is None else int(random_seed)
+    rng = None
+    if seed is not None or randomize:
+        rng = np.random.default_rng(seed)
+    torch_gen = None
+    if seed is not None:
+        torch_gen = torch.Generator(device=device)
+        torch_gen.manual_seed(seed)
+
     eye = torch.eye(n, device=device, dtype=dtype)
     cycle_perms = _cycle_type_perms(n)
+    if rng is not None and randomize and len(cycle_perms) > 1:
+        order = rng.permutation(len(cycle_perms))
+        cycle_perms = [cycle_perms[idx] for idx in order]
+    cycle_mats = [eye[torch.tensor(p, device=device)] for p in cycle_perms]
+
+    perms_cpu = None
+    perms_gpu = None
+    if not inexhaustive:
+        perms_cpu = np.array(list(itertools.permutations(range(n))), dtype=np.int64)
+        if rng is not None and randomize:
+            rng.shuffle(perms_cpu, axis=0)
+        perms_gpu = torch.from_numpy(perms_cpu).to(device)
 
     checked = 0
     fallback_counts = {"gpu_to_cpu": 0, "cpu_to_numpy": 0}
     with torch.no_grad():
-        for C_perm in cycle_perms:
-            C_gpu = eye[torch.tensor(C_perm, device=device)]
-            total_pairs = perms_cpu.shape[0]
-            step = batch_size
-            for batch_start in range(0, total_pairs, step):
+        if inexhaustive:
+            cycle_idx = 0
+            while True:
                 remaining = None if max_pairs is None else max_pairs - checked
                 if remaining is not None and remaining <= 0:
                     elapsed = time.perf_counter() - start
@@ -219,11 +248,10 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, batch_size=64, device=N
                         "pairs_checked": int(checked),
                         "pairs_checked_str": f"{checked:,}",
                         "elapsed_s": float(elapsed),
+                        "fallback_counts": fallback_counts,
                         "found": False,
                     }
-                current_batch = min(step, total_pairs - batch_start)
-                if remaining is not None:
-                    current_batch = min(current_batch, remaining)
+                current_batch = batch_size if remaining is None else min(batch_size, remaining)
                 if current_batch <= 0:
                     elapsed = time.perf_counter() - start
                     return {
@@ -231,10 +259,26 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, batch_size=64, device=N
                         "pairs_checked": int(checked),
                         "pairs_checked_str": f"{checked:,}",
                         "elapsed_s": float(elapsed),
+                        "fallback_counts": fallback_counts,
                         "found": False,
                     }
-                batch_end = batch_start + current_batch
-                P_batch = eye[perms_gpu[batch_start:batch_end]]
+                if randomize:
+                    if rng is None:
+                        rng = np.random.default_rng()
+                    cycle_pick = int(rng.integers(len(cycle_mats)))
+                else:
+                    cycle_pick = cycle_idx
+                    cycle_idx = (cycle_idx + 1) % len(cycle_mats)
+                C_perm = cycle_perms[cycle_pick]
+                C_gpu = cycle_mats[cycle_pick]
+                rand = torch.rand(
+                    (current_batch, n),
+                    device=device,
+                    generator=torch_gen,
+                    dtype=torch.float32,
+                )
+                P_perm_batch = rand.argsort(dim=1)
+                P_batch = eye[P_perm_batch]
                 diff = C_gpu.unsqueeze(0) - P_batch
                 vals = _eigvals_batch(P_batch, diff, t_grid, fallback_counts).reshape(-1)
                 mask = (vals.imag > 0) & (vals.real != 0) & (vals.abs() > in_rad_t)
@@ -248,7 +292,7 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, batch_size=64, device=N
                         pair_idx = bad_idx // (num_incr * n)
                         val = vals[bad_idx].cpu().numpy()
                         checked = checked + int(pair_idx) + 1
-                        P_perm = perms_cpu[batch_start + int(pair_idx)]
+                        P_perm = P_perm_batch[int(pair_idx)].cpu().numpy()
                         C_mat = _perm_to_mat_zero_based(C_perm, n)
                         P_mat = _perm_to_mat_zero_based(P_perm, n)
                         elapsed = time.perf_counter() - start
@@ -264,6 +308,66 @@ def gpu_search_exception(n, num_incr=10, max_pairs=None, batch_size=64, device=N
                             "found": True,
                         }
                 checked += current_batch
+        else:
+            for C_perm, C_gpu in zip(cycle_perms, cycle_mats):
+                total_pairs = perms_cpu.shape[0]
+                step = batch_size
+                for batch_start in range(0, total_pairs, step):
+                    remaining = None if max_pairs is None else max_pairs - checked
+                    if remaining is not None and remaining <= 0:
+                        elapsed = time.perf_counter() - start
+                        return {
+                            "n": int(n),
+                            "pairs_checked": int(checked),
+                            "pairs_checked_str": f"{checked:,}",
+                            "elapsed_s": float(elapsed),
+                            "fallback_counts": fallback_counts,
+                            "found": False,
+                        }
+                    current_batch = min(step, total_pairs - batch_start)
+                    if remaining is not None:
+                        current_batch = min(current_batch, remaining)
+                    if current_batch <= 0:
+                        elapsed = time.perf_counter() - start
+                        return {
+                            "n": int(n),
+                            "pairs_checked": int(checked),
+                            "pairs_checked_str": f"{checked:,}",
+                            "elapsed_s": float(elapsed),
+                            "fallback_counts": fallback_counts,
+                            "found": False,
+                        }
+                    batch_end = batch_start + current_batch
+                    P_batch = eye[perms_gpu[batch_start:batch_end]]
+                    diff = C_gpu.unsqueeze(0) - P_batch
+                    vals = _eigvals_batch(P_batch, diff, t_grid, fallback_counts).reshape(-1)
+                    mask = (vals.imag > 0) & (vals.real != 0) & (vals.abs() > in_rad_t)
+                    if torch.any(mask):
+                        cand_idx = torch.nonzero(mask, as_tuple=False).flatten()
+                        cand = vals[cand_idx]
+                        inside = _in_region_mask_torch(cand, x_lo_t, x_hi_t, m_t, b_t)
+                        if not torch.all(inside):
+                            bad_rel = torch.nonzero(~inside, as_tuple=False)[0].item()
+                            bad_idx = cand_idx[bad_rel].item()
+                            pair_idx = bad_idx // (num_incr * n)
+                            val = vals[bad_idx].cpu().numpy()
+                            checked = checked + int(pair_idx) + 1
+                            P_perm = perms_cpu[batch_start + int(pair_idx)]
+                            C_mat = _perm_to_mat_zero_based(C_perm, n)
+                            P_mat = _perm_to_mat_zero_based(P_perm, n)
+                            elapsed = time.perf_counter() - start
+                            return {
+                                "n": int(n),
+                                "eigenvalue": (float(val.real), float(val.imag)),
+                                "C": C_mat.tolist(),
+                                "P": P_mat.tolist(),
+                                "pairs_checked": int(checked),
+                                "pairs_checked_str": f"{checked:,}",
+                                "elapsed_s": float(elapsed),
+                                "fallback_counts": fallback_counts,
+                                "found": True,
+                            }
+                    checked += current_batch
     elapsed = time.perf_counter() - start
     return {
         "n": int(n),
