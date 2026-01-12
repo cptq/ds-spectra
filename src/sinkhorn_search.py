@@ -1,4 +1,5 @@
 """Sinkhorn-based continuous search for Perfect-Mirsky violations."""
+import itertools
 import math
 import time
 
@@ -10,6 +11,8 @@ except Exception as exc:  # pragma: no cover - only raised when GPU deps missing
     raise ImportError(
         "torch is required for Sinkhorn search. Install torch with CUDA or run via Modal."
     ) from exc
+
+_PERM_CACHE = {}
 
 
 def sinkhorn(logits, iters=10, eps=1e-8, temperature=1.0):
@@ -54,7 +57,7 @@ def eigvals_batch(mats):
         except RuntimeError:
             mats_np = mats.cpu().numpy()
             vals_np = np.stack([np.linalg.eigvals(m) for m in mats_np], axis=0)
-            return torch.from_numpy(vals_np).to(mats.device)
+    return torch.from_numpy(vals_np).to(mats.device)
 
 
 def score_eigvals(eigvals, table, temp=0.02, exclude_tol=1e-6):
@@ -68,6 +71,34 @@ def score_eigvals(eigvals, table, temp=0.02, exclude_tol=1e-6):
     else:
         score = temp * torch.logsumexp(excess / temp, dim=-1)
     return score, excess
+
+
+def perm_mats(n, device, dtype, max_perm_cache=200000):
+    total = math.factorial(n)
+    if total > max_perm_cache:
+        return None
+    key = (n, str(device), dtype)
+    cached = _PERM_CACHE.get(key)
+    if cached is not None:
+        return cached
+    perms = list(itertools.permutations(range(n)))
+    perm_idx = torch.tensor(perms, device=device, dtype=torch.long)
+    mats = torch.eye(n, device=device, dtype=dtype)[perm_idx]
+    _PERM_CACHE[key] = mats
+    return mats
+
+
+def perm_mix_batch(perms, batch_size, mix_k=2, mix_alpha=0.3, generator=None):
+    num_perms = perms.shape[0]
+    device = perms.device
+    idx = torch.randint(num_perms, (batch_size, mix_k), device=device, generator=generator)
+    sel = perms[idx]
+    weights = torch.rand((batch_size, mix_k), device=device, generator=generator)
+    if mix_alpha is not None and mix_alpha > 0:
+        weights = weights ** (1.0 / float(mix_alpha))
+    weights = weights / weights.sum(dim=1, keepdim=True)
+    mats = (sel * weights[:, :, None, None]).sum(dim=1)
+    return mats
 
 
 def summarize_candidates(logits, n, table, sinkhorn_iters=10, temperature=1.0, score_temp=0.02):
@@ -89,6 +120,10 @@ def stage1_random_search(
     temperature=1.0,
     score_temp=0.02,
     table_bins=4096,
+    init_mode="gaussian",
+    mix_k=2,
+    mix_alpha=0.3,
+    max_perm_cache=200000,
     device=None,
     dtype=torch.float32,
     seed=None,
@@ -104,30 +139,49 @@ def stage1_random_search(
 
     best_scores = None
     best_logits = None
+    perms = None
+    use_perm_mix = init_mode in {"perm_mix", "hybrid"}
+    if use_perm_mix:
+        perms = perm_mats(n, device, dtype, max_perm_cache=max_perm_cache)
+        if perms is None:
+            use_perm_mix = False
     with torch.no_grad():
         for _ in range(num_batches):
-            logits = torch.randn(
-                (batch_size, n, n),
-                device=device,
-                dtype=dtype,
-                generator=gen,
-            )
-            scores, _, _ = summarize_candidates(
-                logits,
-                n,
-                table,
-                sinkhorn_iters=sinkhorn_iters,
-                temperature=temperature,
-                score_temp=score_temp,
-            )
+            if use_perm_mix and (init_mode == "perm_mix" or (init_mode == "hybrid" and torch.rand(()) < 0.5)):
+                mats = perm_mix_batch(
+                    perms,
+                    batch_size,
+                    mix_k=mix_k,
+                    mix_alpha=mix_alpha,
+                    generator=gen,
+                )
+                eigvals = eigvals_batch(mats)
+                scores, _ = score_eigvals(eigvals, table, temp=score_temp)
+                logits = (mats + 1e-8).log()
+            else:
+                logits = torch.randn(
+                    (batch_size, n, n),
+                    device=device,
+                    dtype=dtype,
+                    generator=gen,
+                )
+                scores, _, _ = summarize_candidates(
+                    logits,
+                    n,
+                    table,
+                    sinkhorn_iters=sinkhorn_iters,
+                    temperature=temperature,
+                    score_temp=score_temp,
+                )
             top = min(top_k, scores.shape[0])
             top_vals, top_idx = torch.topk(scores, k=top)
+            top_vals_cpu = top_vals.detach().cpu()
             logits_cpu = logits[top_idx].detach().cpu()
             if best_scores is None:
-                best_scores = top_vals.clone()
+                best_scores = top_vals_cpu.clone()
                 best_logits = logits_cpu.clone()
             else:
-                combo_scores = torch.cat([best_scores, top_vals], dim=0)
+                combo_scores = torch.cat([best_scores, top_vals_cpu], dim=0)
                 combo_logits = torch.cat([best_logits, logits_cpu], dim=0)
                 keep = min(top_k, combo_scores.shape[0])
                 new_scores, new_idx = torch.topk(combo_scores, k=keep)
@@ -178,6 +232,10 @@ def sinkhorn_pipeline(
     temperature=1.0,
     score_temp=0.02,
     table_bins=4096,
+    init_mode="gaussian",
+    mix_k=2,
+    mix_alpha=0.3,
+    max_perm_cache=200000,
     opt_steps=0,
     opt_lr=0.05,
     entropy_weight=0.0,
@@ -195,6 +253,10 @@ def sinkhorn_pipeline(
         temperature=temperature,
         score_temp=score_temp,
         table_bins=table_bins,
+        init_mode=init_mode,
+        mix_k=mix_k,
+        mix_alpha=mix_alpha,
+        max_perm_cache=max_perm_cache,
         device=device,
         dtype=dtype,
         seed=seed,
