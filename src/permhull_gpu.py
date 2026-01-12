@@ -226,14 +226,6 @@ def gpu_search_exception(
         cycle_perms = [cycle_perms[idx] for idx in order]
     cycle_mats = [eye[torch.tensor(p, device=device)] for p in cycle_perms]
 
-    perms_cpu = None
-    perms_gpu = None
-    if not inexhaustive:
-        perms_cpu = np.array(list(itertools.permutations(range(n))), dtype=np.int64)
-        if rng is not None and randomize:
-            rng.shuffle(perms_cpu, axis=0)
-        perms_gpu = torch.from_numpy(perms_cpu).to(device)
-
     checked = 0
     fallback_counts = {"gpu_to_cpu": 0, "cpu_to_numpy": 0}
     with torch.no_grad():
@@ -310,9 +302,8 @@ def gpu_search_exception(
                 checked += current_batch
         else:
             for C_perm, C_gpu in zip(cycle_perms, cycle_mats):
-                total_pairs = perms_cpu.shape[0]
-                step = batch_size
-                for batch_start in range(0, total_pairs, step):
+                perm_iter = itertools.permutations(range(n))
+                while True:
                     remaining = None if max_pairs is None else max_pairs - checked
                     if remaining is not None and remaining <= 0:
                         elapsed = time.perf_counter() - start
@@ -324,7 +315,7 @@ def gpu_search_exception(
                             "fallback_counts": fallback_counts,
                             "found": False,
                         }
-                    current_batch = min(step, total_pairs - batch_start)
+                    current_batch = batch_size if remaining is None else min(batch_size, remaining)
                     if remaining is not None:
                         current_batch = min(current_batch, remaining)
                     if current_batch <= 0:
@@ -337,8 +328,12 @@ def gpu_search_exception(
                             "fallback_counts": fallback_counts,
                             "found": False,
                         }
-                    batch_end = batch_start + current_batch
-                    P_batch = eye[perms_gpu[batch_start:batch_end]]
+                    perms_list = list(itertools.islice(perm_iter, current_batch))
+                    if not perms_list:
+                        break
+                    perms_cpu = np.array(perms_list, dtype=np.int64)
+                    perms_gpu = torch.from_numpy(perms_cpu).to(device)
+                    P_batch = eye[perms_gpu]
                     diff = C_gpu.unsqueeze(0) - P_batch
                     vals = _eigvals_batch(P_batch, diff, t_grid, fallback_counts).reshape(-1)
                     mask = (vals.imag > 0) & (vals.real != 0) & (vals.abs() > in_rad_t)
@@ -352,7 +347,7 @@ def gpu_search_exception(
                             pair_idx = bad_idx // (num_incr * n)
                             val = vals[bad_idx].cpu().numpy()
                             checked = checked + int(pair_idx) + 1
-                            P_perm = perms_cpu[batch_start + int(pair_idx)]
+                            P_perm = perms_cpu[int(pair_idx)]
                             C_mat = _perm_to_mat_zero_based(C_perm, n)
                             P_mat = _perm_to_mat_zero_based(P_perm, n)
                             elapsed = time.perf_counter() - start
