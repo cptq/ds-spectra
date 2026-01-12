@@ -103,14 +103,19 @@ def main(
     )
     top = result.get("top", [])
     best = top[0] if top else None
-    best_score = best.get("score") if best else None
+    best_score = result.get("best_exact_excess")
+    if best_score is None and best is not None:
+        best_score = best.get("max_excess", best.get("score"))
     is_counterexample = best_score is not None and best_score > score_threshold
     result["best_score"] = best_score
     result["counterexample_found"] = bool(is_counterexample)
     if is_counterexample:
         print("!!! COUNTEREXAMPLE FOUND: YES !!!")
         print(f"best_score: {best_score}")
-        print(f"eigenvalue: {best.get('eigenvalue')}")
+        if result.get("best_exact_eigenvalue") is not None:
+            print(f"eigenvalue: {result.get('best_exact_eigenvalue')}")
+        elif best is not None:
+            print(f"eigenvalue: {best.get('eigenvalue')}")
         print("!!! COUNTEREXAMPLE FOUND: YES !!!")
     else:
         print("COUNTEREXAMPLE FOUND: NO")

@@ -73,6 +73,26 @@ def score_eigvals(eigvals, table, temp=0.02, exclude_tol=1e-6):
     return score, excess
 
 
+def pm_radius_exact(theta, n):
+    theta = np.remainder(theta, 2 * math.pi)
+    r_max = np.zeros_like(theta, dtype=float)
+    for k in range(3, n + 1):
+        seg = 2 * math.pi / k
+        angle = np.remainder(theta, seg)
+        denom = np.cos(angle - (math.pi / k))
+        r_k = (math.cos(math.pi / k) / denom)
+        r_max = np.maximum(r_max, r_k)
+    return r_max
+
+
+def max_excess_exact(eigvals, n):
+    theta = np.angle(eigvals)
+    r = pm_radius_exact(theta, n)
+    excess = np.abs(eigvals) - r
+    idx = int(np.argmax(excess))
+    return float(excess[idx]), eigvals[idx]
+
+
 def perm_mats(n, device, dtype, max_perm_cache=200000):
     total = math.factorial(n)
     if total > max_perm_cache:
@@ -105,10 +125,16 @@ def summarize_candidates(logits, n, table, sinkhorn_iters=10, temperature=1.0, s
     mats = sinkhorn(logits, iters=sinkhorn_iters, temperature=temperature)
     eigvals = eigvals_batch(mats)
     score, excess = score_eigvals(eigvals, table, temp=score_temp)
+    max_excess = excess.max(dim=-1).values
     best_idx = excess.argmax(dim=-1)
     rows = torch.arange(eigvals.shape[0], device=eigvals.device)
     best_vals = eigvals[rows, best_idx]
-    return score.detach().cpu(), best_vals.detach().cpu(), mats.detach().cpu()
+    return (
+        score.detach().cpu(),
+        max_excess.detach().cpu(),
+        best_vals.detach().cpu(),
+        mats.detach().cpu(),
+    )
 
 
 def stage1_random_search(
@@ -156,7 +182,8 @@ def stage1_random_search(
                     generator=gen,
                 )
                 eigvals = eigvals_batch(mats)
-                scores, _ = score_eigvals(eigvals, table, temp=score_temp)
+                scores, excess = score_eigvals(eigvals, table, temp=score_temp)
+                rank_scores = excess.max(dim=-1).values
                 logits = (mats + 1e-8).log()
             else:
                 logits = torch.randn(
@@ -165,7 +192,7 @@ def stage1_random_search(
                     dtype=dtype,
                     generator=gen,
                 )
-                scores, _, _ = summarize_candidates(
+                scores, rank_scores, _, _ = summarize_candidates(
                     logits,
                     n,
                     table,
@@ -174,7 +201,7 @@ def stage1_random_search(
                     score_temp=score_temp,
                 )
             top = min(top_k, scores.shape[0])
-            top_vals, top_idx = torch.topk(scores, k=top)
+            top_vals, top_idx = torch.topk(rank_scores, k=top)
             top_vals_cpu = top_vals.detach().cpu()
             logits_cpu = logits[top_idx].detach().cpu()
             if best_scores is None:
@@ -285,7 +312,7 @@ def sinkhorn_pipeline(
             entropy_weight=entropy_weight,
         )
 
-    scores, best_vals, mats = summarize_candidates(
+    scores, max_excess, best_vals, mats = summarize_candidates(
         logits,
         n,
         table,
@@ -293,22 +320,37 @@ def sinkhorn_pipeline(
         temperature=temperature,
         score_temp=score_temp,
     )
-    order = torch.argsort(scores, descending=True)
+    order = torch.argsort(max_excess, descending=True)
     top = []
-    for idx in order[:top_k]:
+    exact_scores = []
+    exact_eigs = []
+    mats_np = mats.numpy()
+    order_top = order[:top_k]
+    for idx in order_top:
+        exact_excess, exact_eigval = max_excess_exact(np.linalg.eigvals(mats_np[idx]), n)
+        exact_scores.append(exact_excess)
+        exact_eigs.append(exact_eigval)
+    for i, idx in enumerate(order_top):
         eigval = best_vals[idx]
         top.append(
             {
                 "score": float(scores[idx]),
+                "max_excess": float(max_excess[idx]),
+                "exact_excess": float(exact_scores[i]),
                 "eigenvalue": (float(eigval.real), float(eigval.imag)),
             }
         )
 
-    best_mat = mats[order[0]].numpy().tolist()
+    best_exact_idx = int(np.argmax(exact_scores)) if exact_scores else 0
+    best_mat = mats_np[order_top[best_exact_idx]]
+    exact_excess = exact_scores[best_exact_idx] if exact_scores else 0.0
+    exact_eigval = exact_eigs[best_exact_idx] if exact_eigs else 0.0 + 0.0j
     elapsed = time.perf_counter() - start
     return {
         "elapsed_s": float(elapsed),
         "top": top,
-        "best_matrix": best_mat,
+        "best_matrix": best_mat.tolist(),
+        "best_exact_excess": exact_excess,
+        "best_exact_eigenvalue": (float(exact_eigval.real), float(exact_eigval.imag)),
         "stage1_top_scores": best_scores.tolist(),
     }
