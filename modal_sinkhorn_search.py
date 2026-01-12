@@ -1,7 +1,28 @@
 """Modal entrypoint for Sinkhorn-based continuous search.
 
 Run:
-  modal run modal_sinkhorn_search.py
+  modal run modal_sinkhorn_search.py --n 5 --init-mode perm_mix --mix-k 2 --mix-alpha 0.2
+
+CLI args (all flags map to the `main()` signature below):
+  --n: matrix size.
+  --batch-size: candidates per batch.
+  --num-batches: number of batches to sample.
+  --top-k: keep top candidates for exact check.
+  --sinkhorn-iters: Sinkhorn normalization iterations.
+  --temperature: start temperature for Sinkhorn; used in refinement.
+  --temp-end: end temperature for refinement annealing; set <0 to disable.
+  --temp-anneal: anneal schedule ("linear" or "exp").
+  --score-temp: softmax temperature for scoring eigenvalue excess.
+  --table-bins: angular bins for PM boundary lookup.
+  --init-mode: "gaussian", "perm_mix", or "hybrid".
+  --mix-k: number of permutations in each mixture (perm_mix only).
+  --mix-alpha: weight sharpness for perm_mix (smaller is spikier).
+  --max-perm-cache: cap on n! for precomputing permutations.
+  --opt-steps: refinement steps (0 disables refinement).
+  --opt-lr: refinement learning rate.
+  --entropy-weight: entropy penalty weight for refinement.
+  --seed: RNG seed; <0 uses a random seed.
+  --score-threshold: only affects YES/NO output; does not change search.
 """
 import modal
 
@@ -29,6 +50,7 @@ def sinkhorn_search(
     num_batches=50,
     top_k=8,
     sinkhorn_iters=10,
+    temperature=1.0,
     score_temp=0.02,
     table_bins=4096,
     init_mode="gaussian",
@@ -38,6 +60,8 @@ def sinkhorn_search(
     opt_steps=0,
     opt_lr=0.05,
     entropy_weight=0.0,
+    temp_end=-1.0,
+    temp_anneal="linear",
     seed=-1,
 ):
     import sys
@@ -46,12 +70,14 @@ def sinkhorn_search(
     from sinkhorn_search import sinkhorn_pipeline
 
     seed = None if seed is None or seed < 0 else seed
+    temp_end = None if temp_end is None or temp_end < 0 else temp_end
     return sinkhorn_pipeline(
         n=n,
         batch_size=batch_size,
         num_batches=num_batches,
         top_k=top_k,
         sinkhorn_iters=sinkhorn_iters,
+        temperature=temperature,
         score_temp=score_temp,
         table_bins=table_bins,
         init_mode=init_mode,
@@ -61,6 +87,8 @@ def sinkhorn_search(
         opt_steps=opt_steps,
         opt_lr=opt_lr,
         entropy_weight=entropy_weight,
+        temp_end=temp_end,
+        temp_anneal=temp_anneal,
         seed=seed,
     )
 
@@ -72,6 +100,7 @@ def main(
     num_batches: int = 50,
     top_k: int = 8,
     sinkhorn_iters: int = 10,
+    temperature: float = 1.0,
     score_temp: float = 0.02,
     table_bins: int = 4096,
     init_mode: str = "gaussian",
@@ -81,6 +110,8 @@ def main(
     opt_steps: int = 0,
     opt_lr: float = 0.05,
     entropy_weight: float = 0.0,
+    temp_end: float = -1.0,
+    temp_anneal: str = "linear",
     seed: int = -1,
     score_threshold: float = 1e-4,
 ):
@@ -90,6 +121,7 @@ def main(
         num_batches=num_batches,
         top_k=top_k,
         sinkhorn_iters=sinkhorn_iters,
+        temperature=temperature,
         score_temp=score_temp,
         table_bins=table_bins,
         init_mode=init_mode,
@@ -99,6 +131,8 @@ def main(
         opt_steps=opt_steps,
         opt_lr=opt_lr,
         entropy_weight=entropy_weight,
+        temp_end=temp_end,
+        temp_anneal=temp_anneal,
         seed=seed,
     )
     top = result.get("top", [])

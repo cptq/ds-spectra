@@ -55,7 +55,7 @@ def eigvals_batch(mats):
         try:
             return torch.linalg.eigvals(mats.cpu()).to(mats.device)
         except RuntimeError:
-            mats_np = mats.cpu().numpy()
+            mats_np = mats.detach().cpu().numpy()
             vals_np = np.stack([np.linalg.eigvals(m) for m in mats_np], axis=0)
     return torch.from_numpy(vals_np).to(mats.device)
 
@@ -229,6 +229,8 @@ def refine_candidates(
     lr=0.05,
     sinkhorn_iters=10,
     temperature=1.0,
+    temp_end=None,
+    temp_anneal="linear",
     score_temp=0.02,
     entropy_weight=0.0,
 ):
@@ -236,9 +238,21 @@ def refine_candidates(
     logits = logits.clone().detach().requires_grad_(True)
     opt = torch.optim.Adam([logits], lr=lr)
     eps = 1e-8
-    for _ in range(steps):
+    if temp_end is None:
+        temp_end = temperature
+    if temp_anneal not in {"linear", "exp"}:
+        raise ValueError("temp_anneal must be 'linear' or 'exp'")
+    for step in range(steps):
+        if steps <= 1 or temperature == temp_end:
+            temp = temperature
+        else:
+            frac = step / (steps - 1)
+            if temp_anneal == "exp":
+                temp = temperature * ((temp_end / max(temperature, 1e-6)) ** frac)
+            else:
+                temp = temperature + (temp_end - temperature) * frac
         opt.zero_grad(set_to_none=True)
-        mats = sinkhorn(logits, iters=sinkhorn_iters, temperature=temperature)
+        mats = sinkhorn(logits, iters=sinkhorn_iters, temperature=temp)
         eigvals = eigvals_batch(mats)
         score, _ = score_eigvals(eigvals, table, temp=score_temp)
         loss = -score.mean()
@@ -257,6 +271,8 @@ def sinkhorn_pipeline(
     top_k=8,
     sinkhorn_iters=10,
     temperature=1.0,
+    temp_end=None,
+    temp_anneal="linear",
     score_temp=0.02,
     table_bins=4096,
     init_mode="gaussian",
@@ -308,6 +324,8 @@ def sinkhorn_pipeline(
             lr=opt_lr,
             sinkhorn_iters=sinkhorn_iters,
             temperature=temperature,
+            temp_end=temp_end,
+            temp_anneal=temp_anneal,
             score_temp=score_temp,
             entropy_weight=entropy_weight,
         )
@@ -324,7 +342,7 @@ def sinkhorn_pipeline(
     top = []
     exact_scores = []
     exact_eigs = []
-    mats_np = mats.numpy()
+    mats_np = mats.detach().cpu().numpy()
     order_top = order[:top_k]
     for idx in order_top:
         exact_excess, exact_eigval = max_excess_exact(np.linalg.eigvals(mats_np[idx]), n)
