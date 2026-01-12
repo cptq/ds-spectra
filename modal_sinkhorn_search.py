@@ -70,6 +70,7 @@ def main(
     opt_lr: float = 0.05,
     entropy_weight: float = 0.0,
     seed: int = -1,
+    score_threshold: float = 1e-4,
 ):
     result = sinkhorn_search.remote(
         n=n,
@@ -85,11 +86,18 @@ def main(
         seed=seed,
     )
     top = result.get("top", [])
-    hits = [item for item in top if item.get("score", -1.0) > 0]
-    if hits:
-        best = hits[0]
-        print("!!! COUNTEREXAMPLE CANDIDATE FOUND !!!")
-        print(f"score: {best.get('score')}")
+    best = top[0] if top else None
+    best_score = best.get("score") if best else None
+    is_counterexample = best_score is not None and best_score > score_threshold
+    result["best_score"] = best_score
+    result["counterexample_found"] = bool(is_counterexample)
+    if is_counterexample:
+        print("!!! COUNTEREXAMPLE FOUND: YES !!!")
+        print(f"best_score: {best_score}")
         print(f"eigenvalue: {best.get('eigenvalue')}")
-        print("!!! COUNTEREXAMPLE CANDIDATE FOUND !!!")
+        print("!!! COUNTEREXAMPLE FOUND: YES !!!")
+    else:
+        print("COUNTEREXAMPLE FOUND: NO")
+        print(f"best_score: {best_score}")
+        print(f"threshold: {score_threshold}")
     print(result)
